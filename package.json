@@ -1,0 +1,40 @@
+{
+  "name": "documentation-scraper-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server for website crawling and content scraping using FastMCP TypeScript",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && node build/index.js",
+    "start": "node build/index.js",
+    "watch": "tsc --watch",
+    "test": "npm run build && npx fastmcp inspect build/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "scraping",
+    "crawling",
+    "documentation",
+    "typescript"
+  ],
+  "author": "Jeremy Parker",
+  "license": "MIT",
+  "dependencies": {
+    "@types/puppeteer": "^5.4.7",
+    "fastmcp": "^1.27.7",
+    "p-limit": "^4.0.0",
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
