@@ -214,7 +214,11 @@ export class InteractionHandler {
                     this.logger.debug(`Selector found: ${step.selector}`);
                     break;
                 case 'waitForNetworkIdle':
-                    await page.waitForLoadState('networkidle', { timeout: networkTimeout });
+                    // Wait for network to be idle (no network activity for 500ms)
+                    await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: networkTimeout }).catch(() => {
+                        // If no navigation occurs, just wait a reasonable time for network to settle
+                        return page.waitForTimeout(networkTimeout < 2000 ? networkTimeout : 2000);
+                    });
                     this.logger.debug('Network idle state achieved');
                     break;
                 case 'waitForFunction':

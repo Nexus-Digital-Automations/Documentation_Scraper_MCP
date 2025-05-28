@@ -11,6 +11,8 @@ export declare class UrlDiscoveryEngine {
     private interactionHandler?;
     private structuredDataExtractor?;
     private changeDetectionMonitor?;
+    private rateLimiter?;
+    private staticProxyManager?;
     private discoveredUrls;
     private visitedUrls;
     private failedUrls;

@@ -45,7 +45,6 @@ export class BrowserManager {
     
     this.startMemoryMonitoring();
   }
-
   /**
    * Launch browser with comprehensive stealth configuration and optional proxy support
    * Integrates Rayobyte static IP configuration for enhanced scraping capabilities
@@ -107,7 +106,6 @@ export class BrowserManager {
       throw new Error(`Browser launch failed: ${errorMessage}`);
     }
   }
-
   /**
    * Create new page with default configuration, stealth settings, and proxy authentication
    * 
@@ -155,7 +153,6 @@ export class BrowserManager {
       throw new Error(`Page creation failed: ${errorMessage}`);
     }
   }
-
   /**
    * Configure page with default settings for consistent behavior
    */
@@ -220,3 +217,83 @@ export class BrowserManager {
       return null;
     }
   }
+  /**
+   * Close page safely and remove from active tracking
+   */
+  async closePage(page: Page): Promise<void> {
+    try {
+      if (page && !page.isClosed()) {
+        await page.close();
+        this.activePages.delete(page);
+        this.logger.debug('Page closed successfully');
+      }
+    } catch (error) {
+      this.logger.warn('Page closure failed', { error: getErrorMessage(error) });
+    }
+  }
+
+  /**
+   * Close browser safely and remove from active tracking
+   */
+  async closeBrowser(browser: Browser): Promise<void> {
+    try {
+      if (browser && browser.connected) {
+        await browser.close();
+        this.activeBrowsers.delete(browser);
+        this.logger.debug('Browser closed successfully');
+      }
+    } catch (error) {
+      this.logger.warn('Browser closure failed', { error: getErrorMessage(error) });
+    }
+  }
+
+  /**
+   * Start memory monitoring for resource management
+   */
+  private startMemoryMonitoring(): void {
+    if (this.memoryMonitoringInterval) {
+      clearInterval(this.memoryMonitoringInterval);
+    }
+
+    this.memoryMonitoringInterval = setInterval(() => {
+      const memoryUsage = process.memoryUsage();
+      const memoryUsageMB = memoryUsage.heapUsed / 1024 / 1024;
+
+      if (memoryUsageMB > this.config.resourceMonitoring.memoryThresholdMB) {
+        this.logger.warn('Memory threshold exceeded', {
+          currentMemoryMB: Math.round(memoryUsageMB),
+          thresholdMB: this.config.resourceMonitoring.memoryThresholdMB,
+          activeBrowsers: this.activeBrowsers.size,
+          activePages: this.activePages.size
+        });
+
+        // Trigger garbage collection if available
+        if (global.gc) {
+          global.gc();
+          this.logger.debug('Garbage collection triggered');
+        }
+      }
+    }, this.config.resourceMonitoring.cleanupIntervalMS);
+  }
+
+  /**
+   * Cleanup resources when shutting down
+   */
+  async shutdown(): Promise<void> {
+    try {
+      if (this.memoryMonitoringInterval) {
+        clearInterval(this.memoryMonitoringInterval);
+      }
+      
+      const pageClosePromises = Array.from(this.activePages).map(page => this.closePage(page));
+      await Promise.allSettled(pageClosePromises);
+
+      const browserClosePromises = Array.from(this.activeBrowsers).map(browser => this.closeBrowser(browser));
+      await Promise.allSettled(browserClosePromises);
+
+      this.logger.info('BrowserManager shutdown completed');
+    } catch (error) {
+      this.logger.error('Error during shutdown', { error: getErrorMessage(error) });
+    }
+  }
+}

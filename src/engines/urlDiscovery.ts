@@ -48,6 +48,8 @@ import { ContentExtractor } from '../utils/contentExtractor.js';
 import { InteractionHandler } from '../utils/interactionHandler.js';
 import { StructuredDataExtractor, ExtractedStructuredData } from '../utils/structuredDataExtractor.js';
 import { ChangeDetectionMonitor, ChangeDetectionResult } from '../utils/changeDetectionMonitor.js';
+import { RateLimiter } from '../utils/rateLimiter.js';
+import { StaticProxyManager } from '../utils/staticProxyManager.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -65,6 +67,8 @@ export class UrlDiscoveryEngine {
   private interactionHandler?: InteractionHandler;
   private structuredDataExtractor?: StructuredDataExtractor;
   private changeDetectionMonitor?: ChangeDetectionMonitor;
+  private rateLimiter?: RateLimiter;
+  private staticProxyManager?: StaticProxyManager;
   private discoveredUrls: Set<string>;
   private visitedUrls: Set<string>;
   private failedUrls: Set<string>;
@@ -91,6 +95,15 @@ export class UrlDiscoveryEngine {
     
     if (config.changeDetection?.enabled) {
       this.changeDetectionMonitor = new ChangeDetectionMonitor(config.changeDetection);
+    }
+    
+    // Initialize rate limiting and proxy management if configured
+    if (config.rateLimitConfig?.enabled) {
+      this.rateLimiter = new RateLimiter(config.rateLimitConfig, this.logger);
+    }
+    
+    if (config.proxyConfig?.staticProxies && config.proxyConfig.staticProxies.length > 0) {
+      this.staticProxyManager = new StaticProxyManager(config.proxyConfig, this.logger);
     }
     
     this.discoveredUrls = new Set();
@@ -203,6 +216,13 @@ export class UrlDiscoveryEngine {
 
         // Wait for current batch to complete
         await Promise.allSettled(batchPromises);
+        
+        // Optional: Check for unresolvable operational state (if all proxies fail or excessive rate limiting)
+        // Uncomment the following lines if you want proactive shutdown on operational failures
+        // if (this.rateLimiter?.isEffectivelyBlocked?.(30) || this.staticProxyManager?.areAllProxiesUnusable?.()) {
+        //   this.logger.error('Unresolvable operational state detected. Consider implementing shutdown logic.');
+        //   break; // Exit the main crawling loop
+        // }
       }
 
       // Save discovered URLs to file
@@ -257,11 +277,33 @@ export class UrlDiscoveryEngine {
     let browser = null;
     let page = null;
     const discoveredLinks: string[] = [];
+    let currentProxyUrl: string | undefined;
+    
+    // Extract hostname for rate limiting and proxy management (outside try block for error handling)
+    const hostname = this.extractHostname(item.url);
 
     try {
-      // Launch browser and create page
-      browser = await this.browserManager.launchBrowser();
-      page = await this.browserManager.createPage(browser);
+      
+      // Get proxy for this hostname if static proxy manager is configured
+      if (this.staticProxyManager) {
+        currentProxyUrl = this.staticProxyManager.getProxyForHost(hostname);
+        this.logger.debug('Selected proxy for hostname', { hostname, proxyUrl: currentProxyUrl });
+      }
+      
+      // Apply rate limiting before making request
+      if (this.rateLimiter) {
+        await this.rateLimiter.waitForSlot(hostname, currentProxyUrl);
+        this.logger.debug('Rate limit check passed', { hostname, proxyUrl: currentProxyUrl });
+      }
+      
+      // Launch browser with proxy support
+      browser = await this.browserManager.launchBrowser(currentProxyUrl);
+      page = await this.browserManager.createPage(browser, currentProxyUrl);
+      
+      // Record the request attempt in rate limiter
+      if (this.rateLimiter) {
+        this.rateLimiter.recordRequest(hostname, currentProxyUrl);
+      }
 
       // Apply user agent rotation if enabled
       if (args.userAgentRotation) {
@@ -397,7 +439,31 @@ export class UrlDiscoveryEngine {
 
       return discoveredLinks;
     } catch (error) {
-      throw new Error(`Failed to process URL ${item.url}: ${getErrorMessage(error)}`);
+      const errorMessage = getErrorMessage(error);
+      
+      // Handle specific error types for rate limiting and proxy management
+      if (errorMessage.includes('429') || errorMessage.includes('Too Many Requests')) {
+        this.logger.warn('Rate limiting error detected', { url: item.url, hostname, error: errorMessage });
+        
+        if (this.rateLimiter) {
+          this.rateLimiter.initiateHostBackoff(hostname);
+          if (currentProxyUrl) {
+            this.rateLimiter.initiateIpBackoff(currentProxyUrl);
+          }
+        }
+      } else if (errorMessage.includes('net::ERR_ABORTED') || errorMessage.includes('net::ERR_CONNECTION')) {
+        this.logger.warn('Connection error detected', { url: item.url, hostname, proxyUrl: currentProxyUrl, error: errorMessage });
+        
+        if (currentProxyUrl && this.staticProxyManager) {
+          this.staticProxyManager.reportPermanentIpFailure(currentProxyUrl);
+        }
+        
+        if (this.rateLimiter && currentProxyUrl) {
+          this.rateLimiter.initiateIpBackoff(currentProxyUrl);
+        }
+      }
+      
+      throw new Error(`Failed to process URL ${item.url}: ${errorMessage}`);
     } finally {
       // Clean up resources
       if (page) {

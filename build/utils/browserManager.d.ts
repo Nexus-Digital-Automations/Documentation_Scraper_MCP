@@ -40,5 +40,21 @@ export declare class BrowserManager {
      * Extract proxy credentials from URL
      */
     private extractProxyCredentials;
+    /**
+     * Close page safely and remove from active tracking
+     */
+    closePage(page: Page): Promise<void>;
+    /**
+     * Close browser safely and remove from active tracking
+     */
+    closeBrowser(browser: Browser): Promise<void>;
+    /**
+     * Start memory monitoring for resource management
+     */
+    private startMemoryMonitoring;
+    /**
+     * Cleanup resources when shutting down
+     */
+    shutdown(): Promise<void>;
 }
 //# sourceMappingURL=browserManager.d.ts.map

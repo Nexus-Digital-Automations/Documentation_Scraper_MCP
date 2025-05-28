@@ -47,5 +47,16 @@ export declare class StructuredDataExtractor {
     private extractUsingSchema;
     private extractListData;
     private extractSingleRecord;
+    private generateOutputFiles;
+    private validateSchema;
+    private ensureOutputDirectory;
+    /**
+     * Get extraction statistics for monitoring
+     */
+    getExtractionStats(): object;
+    /**
+     * Clear extraction cache to prevent memory leaks
+     */
+    clearCache(): void;
 }
 //# sourceMappingURL=structuredDataExtractor.d.ts.map

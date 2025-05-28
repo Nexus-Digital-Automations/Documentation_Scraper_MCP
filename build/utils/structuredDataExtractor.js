@@ -5,39 +5,7 @@
 // Comprehensive structured data extraction utility for converting web content
 // into structured JSON/CSV formats. Enables extraction of specific data points
 // from web pages into organized, structured formats for analysis and processing.
-//
-// DEPENDENCIES:
-// - puppeteer: Browser automation and DOM interaction
-// - fs/promises: File system operations for output generation
-// - path: Path manipulation for organized output structure
-// - ../config.js: Structured data extraction configuration and schema definitions
-// - ./logger.js: Comprehensive logging system
-//
-// EXPECTED INTERFACES:
-// - StructuredDataExtractor class with comprehensive extraction capabilities
-// - Support for multiple extraction schemas and output formats
-// - Data transformation and validation capabilities
-// - Organized file output with JSON and CSV format support
-//
-// DESIGN PATTERNS:
-// - Strategy pattern for different extraction approaches
-// - Template method pattern for extraction pipeline
-// - Factory pattern for output format generation
-// - Builder pattern for data record construction
-//
-// SYSTEM INVARIANTS:
-// - All extraction schemas must be validated before use
-// - Required fields must be present or extraction fails
-// - Data transformations must be applied consistently
-// - Output files must be organized by schema and format
-//
-// NEGATIVE SPACE CONSIDERATIONS:
-// - NEVER proceed with extraction without schema validation
-// - NEVER ignore required field validation requirements
-// - NEVER save invalid or incomplete structured data
-// - NEVER create output files outside designated directories
 // ============================================================================
-import { Page } from 'puppeteer';
 import { Logger, getErrorMessage } from './logger.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -150,21 +118,45 @@ export class StructuredDataExtractor {
         }
         return schema.appliesToUrlPattern.test(url);
     }
-    async extractUsingSchema(page, schema) {
+    async extractUsingSchema(page, schema, url) {
         try {
+            this.validationErrors = [];
+            if (!this.validateSchema(schema)) {
+                throw new Error(`Schema validation failed: ${this.validationErrors.join(', ')}`);
+            }
+            let extractedData;
             if (schema.rootSelector) {
-                return await this.extractListData(page, schema);
+                extractedData = await this.extractListData(page, schema);
             }
             else {
-                return await this.extractSingleRecord(page, schema);
+                extractedData = await this.extractSingleRecord(page, schema);
             }
+            if (!extractedData || (Array.isArray(extractedData) && extractedData.length === 0)) {
+                this.logger.warn('No data extracted from schema', { schemaName: schema.name, url });
+                return null;
+            }
+            return {
+                schemaName: schema.name,
+                sourceUrl: url,
+                extractedAt: new Date().toISOString(),
+                data: extractedData,
+                recordCount: Array.isArray(extractedData) ? extractedData.length : 1,
+                validationErrors: this.validationErrors.length > 0 ? [...this.validationErrors] : undefined
+            };
         }
         catch (error) {
-            this.logger.error('Schema extraction failed', { schemaName: schema.name, error: getErrorMessage(error) });
+            this.logger.error('Schema extraction failed', {
+                schemaName: schema.name,
+                url,
+                error: getErrorMessage(error)
+            });
             return null;
         }
     }
     async extractListData(page, schema) {
+        if (!schema.rootSelector) {
+            throw new Error('Root selector is required for list data extraction');
+        }
         const results = await page.evaluate((rootSelector, fields) => {
             const rootElements = document.querySelectorAll(rootSelector);
             const records = [];
@@ -177,7 +169,25 @@ export class StructuredDataExtractor {
                             ? element.getAttribute(field.attribute)
                             : element.textContent || element.innerText;
                         if (value && field.transform) {
-                            value = this.transformValue(value, field.transform);
+                            // Apply basic transformations within evaluate context
+                            switch (field.transform) {
+                                case 'trim':
+                                    value = value.trim();
+                                    break;
+                                case 'lowercase':
+                                    value = value.toLowerCase();
+                                    break;
+                                case 'uppercase':
+                                    value = value.toUpperCase();
+                                    break;
+                                case 'number':
+                                    const numValue = parseFloat(value.replace(/[^\d.-]/g, ''));
+                                    value = isNaN(numValue) ? value : numValue;
+                                    break;
+                                default:
+                                    // Keep original value for unsupported transforms
+                                    break;
+                            }
                         }
                         record[field.name] = value;
                     }
@@ -224,430 +234,99 @@ export class StructuredDataExtractor {
         }, schema.fields);
         return record;
     }
-}
-async;
-extractUsingSchema(page, Page, schema, StructuredDataSchema, url, string);
-Promise < ExtractedStructuredData | null > {
-    try: {
-        // Clear previous validation errors
-        this: .validationErrors = [],
-        : .validateSchema(schema)
+    async generateOutputFiles(extractionResult, schema) {
+        try {
+            const outputFiles = [];
+            const outputFormat = schema.outputFormat || 'json';
+            const timestamp = Date.now();
+            const sanitizedSchemaName = schema.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            if (outputFormat === 'json' || outputFormat === 'both') {
+                const jsonFilename = `${sanitizedSchemaName}_${timestamp}.json`;
+                const jsonPath = path.join(this.outputDir, jsonFilename);
+                const jsonOutput = {
+                    schema: { name: schema.name, description: schema.description },
+                    extraction: {
+                        sourceUrl: extractionResult.sourceUrl,
+                        extractedAt: extractionResult.extractedAt,
+                        recordCount: extractionResult.recordCount
+                    },
+                    data: extractionResult.data
+                };
+                await fs.writeFile(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
+                outputFiles.push(jsonPath);
+            }
+            return outputFiles;
+        }
+        catch (error) {
+            this.logger.error('Output file generation failed', {
+                schemaName: schema.name,
+                error: getErrorMessage(error)
+            });
+            return [];
+        }
     }
-};
-{
-    throw new Error(`Schema validation failed: ${this.validationErrors.join(', ')}`);
-}
-let extractedData;
-let transformationSummary;
-if (schema.rootSelector) {
-    // Extract list of records
-    const listResult = await this.extractListData(page, schema);
-    extractedData = listResult.data;
-    transformationSummary = listResult.transformationSummary;
-}
-else {
-    // Extract single record
-    const recordResult = await this.extractSingleRecord(page, schema);
-    extractedData = recordResult.data;
-    transformationSummary = recordResult.transformationSummary;
-}
-// Validate extracted data
-if (!extractedData || (Array.isArray(extractedData) && extractedData.length === 0)) {
-    this.logger.warn('No data extracted from schema', { schemaName: schema.name, url });
-    return null;
-}
-return {
-    schemaName: schema.name,
-    sourceUrl: url,
-    extractedAt: new Date().toISOString(),
-    data: extractedData,
-    recordCount: Array.isArray(extractedData) ? extractedData.length : 1,
-    validationErrors: this.validationErrors.length > 0 ? [...this.validationErrors] : undefined,
-    transformationSummary
-};
-try { }
-catch (error) {
-    this.logger.error('Schema extraction failed', {
-        schemaName: schema.name,
-        url,
-        error: getErrorMessage(error)
-    });
-    return null;
-}
-async;
-extractListData(page, Page, schema, StructuredDataSchema);
-Promise < { data: any[], transformationSummary: TransformationSummary } > {
-    try: {
-        const: results = await page.evaluate((rootSelector, fields) => {
-            const rootElements = document.querySelectorAll(rootSelector);
-            const records = [];
-            let transformationStats = {
-                totalFields: 0,
-                transformedFields: 0,
-                skippedFields: 0,
-                errorFields: 0,
-                transformationTypes: {}
-            };
-            // Helper function for transformation inside evaluate
-            const applyTransformation = (value, transformationType) => {
-                switch (transformationType) {
-                    case 'trim':
-                        return value.trim();
-                    case 'lowercase':
-                        return value.toLowerCase();
-                    case 'uppercase':
-                        return value.toUpperCase();
-                    case 'number':
-                        const numValue = parseFloat(value.replace(/[^\d.-]/g, ''));
-                        return isNaN(numValue) ? value : numValue;
-                    case 'date':
-                        const dateValue = new Date(value);
-                        return isNaN(dateValue.getTime()) ? value : dateValue.toISOString();
-                    default:
-                        return value;
-                }
-            };
-            rootElements.forEach(rootElement => {
-                const record = {};
-                let hasRequiredFields = true;
-                fields.forEach((field) => {
-                    transformationStats.totalFields++;
-                    try {
-                        const element = rootElement.querySelector(field.selector);
-                        if (element) {
-                            let value = field.attribute && field.attribute !== 'innerText'
-                                ? element.getAttribute(field.attribute)
-                                : element.textContent || element.innerText;
-                            if (value !== null && value !== undefined) {
-                                // Apply data transformation if specified
-                                if (field.transform) {
-                                    try {
-                                        value = applyTransformation(value, field.transform);
-                                        transformationStats.transformedFields++;
-                                        transformationStats.transformationTypes[field.transform] =
-                                            (transformationStats.transformationTypes[field.transform] || 0) + 1;
-                                    }
-                                    catch (transformError) {
-                                        transformationStats.errorFields++;
-                                        console.warn(`Transformation failed for field ${field.name}:`, transformError);
-                                    }
-                                }
-                                record[field.name] = value;
-                            }
-                            else if (field.required) {
-                                hasRequiredFields = false;
-                                transformationStats.errorFields++;
-                            }
-                        }
-                        else if (field.required) {
-                            hasRequiredFields = false;
-                            transformationStats.errorFields++;
-                        }
-                        else {
-                            transformationStats.skippedFields++;
-                        }
+    validateSchema(schema) {
+        try {
+            this.validationErrors = [];
+            if (!schema.name || schema.name.trim() === '') {
+                this.validationErrors.push('Schema name is required');
+            }
+            if (!schema.fields || schema.fields.length === 0) {
+                this.validationErrors.push('Schema must have at least one field');
+            }
+            else {
+                schema.fields.forEach((field, index) => {
+                    if (!field.name || field.name.trim() === '') {
+                        this.validationErrors.push(`Field ${index + 1} must have a name`);
                     }
-                    catch (fieldError) {
-                        transformationStats.errorFields++;
-                        console.warn(`Field extraction failed for ${field.name}:`, fieldError);
+                    if (!field.selector || field.selector.trim() === '') {
+                        this.validationErrors.push(`Field '${field.name}' must have a selector`);
                     }
                 });
-                // Only include record if it has required fields and contains data
-                if (hasRequiredFields && Object.keys(record).length > 0) {
-                    records.push(record);
-                }
+            }
+            if (schema.outputFormat && !['json', 'csv', 'both'].includes(schema.outputFormat)) {
+                this.validationErrors.push('Output format must be json, csv, or both');
+            }
+            return this.validationErrors.length === 0;
+        }
+        catch (error) {
+            this.validationErrors.push(`Schema validation error: ${getErrorMessage(error)}`);
+            return false;
+        }
+    }
+    async ensureOutputDirectory() {
+        try {
+            await fs.mkdir(this.outputDir, { recursive: true });
+        }
+        catch (error) {
+            this.logger.error('Failed to create output directory', {
+                outputDir: this.outputDir,
+                error: getErrorMessage(error)
             });
-            return { records, transformationStats };
-        }, schema.rootSelector, schema.fields),
-        return: {
-            data: results.records,
-            transformationSummary: results.transformationStats
+            throw error;
         }
-    }, catch(error) {
-        throw new Error(`List data extraction failed: ${getErrorMessage(error)}`);
     }
-};
-async;
-extractSingleRecord(page, Page, schema, StructuredDataSchema);
-Promise < { data: any, transformationSummary: TransformationSummary } > {
-    try: {
-        const: result = await page.evaluate((fields) => {
-            const record = {};
-            let transformationStats = {
-                totalFields: 0,
-                transformedFields: 0,
-                skippedFields: 0,
-                errorFields: 0,
-                transformationTypes: {}
-            };
-            // Helper function for transformation inside evaluate
-            const applyTransformation = (value, transformationType) => {
-                switch (transformationType) {
-                    case 'trim':
-                        return value.trim();
-                    case 'lowercase':
-                        return value.toLowerCase();
-                    case 'uppercase':
-                        return value.toUpperCase();
-                    case 'number':
-                        const numValue = parseFloat(value.replace(/[^\d.-]/g, ''));
-                        return isNaN(numValue) ? value : numValue;
-                    case 'date':
-                        const dateValue = new Date(value);
-                        return isNaN(dateValue.getTime()) ? value : dateValue.toISOString();
-                    default:
-                        return value;
-                }
-            };
-            fields.forEach((field) => {
-                transformationStats.totalFields++;
-                try {
-                    if (field.isList) {
-                        // Handle list fields
-                        const elements = document.querySelectorAll(field.selector);
-                        const values = [];
-                        elements.forEach(element => {
-                            let value = field.attribute && field.attribute !== 'innerText'
-                                ? element.getAttribute(field.attribute)
-                                : element.textContent || element.innerText;
-                            if (value !== null && value !== undefined) {
-                                if (field.transform) {
-                                    try {
-                                        value = applyTransformation(value, field.transform);
-                                        transformationStats.transformedFields++;
-                                        transformationStats.transformationTypes[field.transform] =
-                                            (transformationStats.transformationTypes[field.transform] || 0) + 1;
-                                    }
-                                    catch (transformError) {
-                                        transformationStats.errorFields++;
-                                    }
-                                }
-                                values.push(value);
-                            }
-                        });
-                        record[field.name] = values;
-                    }
-                    else {
-                        // Handle single fields
-                        const element = document.querySelector(field.selector);
-                        if (element) {
-                            let value = field.attribute && field.attribute !== 'innerText'
-                                ? element.getAttribute(field.attribute)
-                                : element.textContent || element.innerText;
-                            if (value !== null && value !== undefined) {
-                                if (field.transform) {
-                                    try {
-                                        value = applyTransformation(value, field.transform);
-                                        transformationStats.transformedFields++;
-                                        transformationStats.transformationTypes[field.transform] =
-                                            (transformationStats.transformationTypes[field.transform] || 0) + 1;
-                                    }
-                                    catch (transformError) {
-                                        transformationStats.errorFields++;
-                                    }
-                                }
-                                record[field.name] = value;
-                            }
-                            else if (field.required) {
-                                transformationStats.errorFields++;
-                            }
-                        }
-                        else if (field.required) {
-                            transformationStats.errorFields++;
-                        }
-                        else {
-                            transformationStats.skippedFields++;
-                        }
-                    }
-                }
-                catch (fieldError) {
-                    transformationStats.errorFields++;
-                    console.warn(`Field extraction failed for ${field.name}:`, fieldError);
-                }
-            });
-            return { record, transformationStats };
-        }, schema.fields),
-        return: {
-            data: result.record,
-            transformationSummary: result.transformationStats
-        }
-    }, catch(error) {
-        throw new Error(`Single record extraction failed: ${getErrorMessage(error)}`);
+    /**
+     * Get extraction statistics for monitoring
+     */
+    getExtractionStats() {
+        return {
+            outputDirectory: this.outputDir,
+            cacheSize: this.extractionCache.size,
+            recentValidationErrors: this.validationErrors.length,
+            configuration: {
+                supportedTransformations: ['trim', 'lowercase', 'uppercase', 'number', 'date'],
+                supportedOutputFormats: ['json', 'csv', 'both']
+            }
+        };
     }
-};
-async;
-generateOutputFiles(extractionResult, ExtractedStructuredData, schema, StructuredDataSchema);
-Promise < string[] > {
-    try: {
-        const: outputFiles, string, []:  = [],
-        const: outputFormat = schema.outputFormat || 'json',
-        const: timestamp = Date.now(),
-        const: sanitizedSchemaName = schema.name.replace(/[^a-zA-Z0-9_-]/g, '_'),
-        // Generate JSON output
-        if(outputFormat) { }
-    } === 'json' || outputFormat === 'both'
-};
-{
-    const jsonFilename = `${sanitizedSchemaName}_${timestamp}.json`;
-    const jsonPath = path.join(this.outputDir, jsonFilename);
-    const jsonOutput = {
-        schema: {
-            name: schema.name,
-            description: schema.description
-        },
-        extraction: {
-            sourceUrl: extractionResult.sourceUrl,
-            extractedAt: extractionResult.extractedAt,
-            recordCount: extractionResult.recordCount
-        },
-        data: extractionResult.data,
-        transformationSummary: extractionResult.transformationSummary
-    };
-    await fs.writeFile(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
-    outputFiles.push(jsonPath);
-    this.logger.debug('JSON output file generated', {
-        schemaName: schema.name,
-        filePath: jsonPath,
-        recordCount: extractionResult.recordCount
-    });
-}
-// Generate CSV output
-if (outputFormat === 'csv' || outputFormat === 'both') {
-    const csvFilename = `${sanitizedSchemaName}_${timestamp}.csv`;
-    const csvPath = path.join(this.outputDir, csvFilename);
-    const csvContent = this.convertToCSV(extractionResult.data, schema.fields);
-    await fs.writeFile(csvPath, csvContent, 'utf-8');
-    outputFiles.push(csvPath);
-    this.logger.debug('CSV output file generated', {
-        schemaName: schema.name,
-        filePath: csvPath,
-        recordCount: extractionResult.recordCount
-    });
-}
-return outputFiles;
-try { }
-catch (error) {
-    this.logger.error('Output file generation failed', {
-        schemaName: schema.name,
-        error: getErrorMessage(error)
-    });
-    return [];
-}
-convertToCSV(data, any, fields, FieldExtractor[]);
-string;
-{
-    try {
-        if (!data) {
-            return '';
-        }
-        const records = Array.isArray(data) ? data : [data];
-        if (records.length === 0) {
-            return '';
-        }
-        // Generate headers from field definitions
-        const headers = fields.map(field => field.name);
-        // Generate CSV rows
-        const csvRows = [headers.join(',')];
-        records.forEach(record => {
-            const row = headers.map(header => {
-                const value = record[header];
-                if (value === null || value === undefined) {
-                    return '';
-                }
-                // Handle arrays in CSV
-                if (Array.isArray(value)) {
-                    return `"${value.join('; ')}"`;
-                }
-                // Escape CSV special characters
-                const stringValue = String(value);
-                if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
-                    return `"${stringValue.replace(/"/g, '""')}"`;
-                }
-                return stringValue;
-            });
-            csvRows.push(row.join(','));
-        });
-        return csvRows.join('\n');
-    }
-    catch (error) {
-        this.logger.error('CSV conversion failed', { error: getErrorMessage(error) });
-        return '';
-    }
-}
-validateSchema(schema, StructuredDataSchema);
-boolean;
-{
-    try {
+    /**
+     * Clear extraction cache to prevent memory leaks
+     */
+    clearCache() {
+        this.extractionCache.clear();
         this.validationErrors = [];
-        // Validate schema name
-        if (!schema.name || schema.name.trim() === '') {
-            this.validationErrors.push('Schema name is required');
-        }
-        // Validate fields
-        if (!schema.fields || schema.fields.length === 0) {
-            this.validationErrors.push('Schema must have at least one field');
-        }
-        else {
-            schema.fields.forEach((field, index) => {
-                if (!field.name || field.name.trim() === '') {
-                    this.validationErrors.push(`Field ${index + 1} must have a name`);
-                }
-                if (!field.selector || field.selector.trim() === '') {
-                    this.validationErrors.push(`Field '${field.name}' must have a selector`);
-                }
-            });
-        }
-        // Validate output format
-        if (schema.outputFormat && !['json', 'csv', 'both'].includes(schema.outputFormat)) {
-            this.validationErrors.push('Output format must be json, csv, or both');
-        }
-        return this.validationErrors.length === 0;
-    }
-    catch (error) {
-        this.validationErrors.push(`Schema validation error: ${getErrorMessage(error)}`);
-        return false;
+        this.logger.debug('Extraction cache cleared');
     }
 }
-async;
-ensureOutputDirectory();
-Promise < void  > {
-    try: {
-        await, fs, : .mkdir(this.outputDir, { recursive: true })
-    }, catch(error) {
-        this.logger.error('Failed to create output directory', {
-            outputDir: this.outputDir,
-            error: getErrorMessage(error)
-        });
-        throw error;
-    }
-};
-/**
- * Get extraction statistics for monitoring
- * Provides insights into extraction performance and results
- *
- * @returns Object with extraction statistics
- */
-getExtractionStats();
-object;
-{
-    return {
-        outputDirectory: this.outputDir,
-        cacheSize: this.extractionCache.size,
-        recentValidationErrors: this.validationErrors.length,
-        configuration: {
-            supportedTransformations: ['trim', 'lowercase', 'uppercase', 'number', 'date'],
-            supportedOutputFormats: ['json', 'csv', 'both']
-        }
-    };
-}
-/**
- * Clear extraction cache to prevent memory leaks
- * Should be called periodically during long-running operations
- */
-clearCache();
-void {
-    this: .extractionCache.clear(),
-    this: .validationErrors = [],
-    this: .logger.debug('Extraction cache cleared')
-};
 //# sourceMappingURL=structuredDataExtractor.js.map

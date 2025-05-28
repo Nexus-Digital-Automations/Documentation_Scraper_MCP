@@ -2,7 +2,8 @@
 // MODULE: contentScraping.ts
 //
 // PURPOSE:
-// Complete Content Scraping Engine implementing all "Scrape URL File" functionality.
+// Complete Content Scraping Engine implementing all "Scrape URL File" functionality
+// with comprehensive state management, robust shutdown logic, and resumable operations.
 // Provides batch URL processing, PDF generation, content extraction, failed URL
 // tracking, VPN rotation, and comprehensive error handling capabilities.
 //
@@ -11,58 +12,73 @@
 // - ../utils/browserManager.js: Browser lifecycle management
 // - ../utils/contentExtractor.js: Content extraction and PDF generation
 // - ../utils/logger.js: Comprehensive logging system
+// - ../utils/rateLimiter.js: Rate limiting for responsible scraping
+// - ../utils/staticProxyManager.js: Static proxy management
+// - ../types/state.js: State management interfaces
 // - p-limit: Concurrency control for batch processing
-// - fs/promises: File system operations for URL file reading
+// - fs/promises: File system operations for state persistence
 //
 // EXPECTED INTERFACES:
-// - scrapeUrls(): Main scraping orchestration method
-// - processUrlBatch(): Batch processing with concurrency control
-// - extractContent(): Content extraction using CSS selectors
-// - generatePdf(): PDF generation with custom options
-// - saveTextContent(): Text file creation and organization
-// - trackFailedUrls(): Failed URL tracking and reporting
-// - rotateVpnConnection(): Optional VPN rotation
-// - waitRandomInterval(): Anti-detection delay management
+// - scrapeUrls(): Main scraping orchestration method with state management
+// - saveState(): Comprehensive state persistence for resumable operations
+// - loadState(): State restoration from previous sessions
+// - performShutdown(): Graceful shutdown with state preservation
 //
 // DESIGN PATTERNS:
 // - Strategy pattern for different content extraction approaches
 // - Observer pattern for progress reporting and monitoring
 // - Template method pattern for URL processing pipeline
-// - Factory pattern for output format generation
+// - State pattern for operation persistence and resumption
 //
 // SYSTEM INVARIANTS:
 // - URL validation must occur before processing
 // - Failed URLs must be tracked and reported comprehensively
+// - State must be persistable and restorable across sessions
 // - Concurrency limits must be respected to prevent resource exhaustion
-// - Output directories must be organized properly before content saving
-// - Memory usage must be monitored during large batch operations
+// - Graceful shutdown must preserve all processing state
 //
 // NEGATIVE SPACE CONSIDERATIONS:
 // - NEVER process invalid or malformed URLs
 // - NEVER exceed configured concurrency limits
-// - NEVER proceed without proper output directory structure
-// - NEVER ignore failed URL tracking requirements
-// - NEVER allow memory usage to exceed configured thresholds
+// - NEVER proceed without proper state file validation
+// - NEVER ignore signal handling for graceful shutdown
+// - NEVER allow state corruption during persistence operations
 // ============================================================================
 import pLimit from 'p-limit';
 import { promises as fs } from 'fs';
+import path from 'path';
+import { getStateFileBaseDir } from '../config.js';
 import { BrowserManager } from '../utils/browserManager.js';
 import { ContentExtractor } from '../utils/contentExtractor.js';
 import { Logger, getErrorMessage } from '../utils/logger.js';
 import { UrlUtils } from '../utils/urlUtils.js';
+import { RateLimiter } from '../utils/rateLimiter.js';
+import { StaticProxyManager } from '../utils/staticProxyManager.js';
 /**
- * Complete Content Scraping Engine preserving all Scrape URL File functionality
- * Handles batch URL processing with comprehensive error tracking and content extraction
+ * Complete Content Scraping Engine with state management and robust shutdown
+ * Handles batch URL processing with comprehensive error tracking and resumable operations
  */
 export class ContentScrapingEngine {
     config;
     logger;
     browserManager;
     contentExtractor;
-    failedUrls;
-    processedUrls;
+    rateLimiter;
+    staticProxyManager;
+    // State management properties
+    urlsToProcess = [];
+    processedUrlCount = 0;
+    failedUrlDetails = [];
+    processedInCurrentSessionCounter = 0;
+    // State persistence properties
+    stateFilePath = null;
+    originalJobArgs = {};
+    // Shutdown management
+    isShuttingDown = false;
+    boundHandleSigint;
+    boundHandleSigterm;
     constructor(config) {
-        // Validate configuration before initialization
+        // Validate configuration before initialization - NEGATIVE SPACE PROGRAMMING
         if (!config) {
             throw new Error('ContentScrapingEngine requires valid configuration');
         }
@@ -70,11 +86,193 @@ export class ContentScrapingEngine {
         this.logger = new Logger();
         this.browserManager = new BrowserManager(config);
         this.contentExtractor = new ContentExtractor(config);
-        this.failedUrls = [];
-        this.processedUrls = [];
+        // Initialize rate limiting if configured
+        if (config.rateLimitConfig?.enabled) {
+            this.rateLimiter = new RateLimiter(config.rateLimitConfig, this.logger);
+        }
+        // Initialize static proxy management if configured
+        if (config.proxyConfig?.staticProxies && config.proxyConfig.staticProxies.length > 0) {
+            this.staticProxyManager = new StaticProxyManager(config.proxyConfig, this.logger);
+        }
+        // Bind signal handlers for graceful shutdown
+        this.boundHandleSigint = () => this.performShutdown(undefined, 'SIGINT');
+        this.boundHandleSigterm = () => this.performShutdown(undefined, 'SIGTERM');
     }
     /**
-     * Main scraping orchestration method - Complete Scrape URL File functionality
+     * Generate unique state file path for this scraping job
+     * Creates identifier based on job parameters for state persistence
+     *
+     * @param jobIdentifier - Unique identifier for this scraping job
+     * @returns string - Full path to state file
+     */
+    generateStateFilePath(jobIdentifier) {
+        const baseDir = getStateFileBaseDir(this.config);
+        // Sanitize jobIdentifier for use in filename - NEGATIVE SPACE PROGRAMMING
+        const safeIdentifier = jobIdentifier
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .substring(0, 100);
+        return path.join(baseDir, `contentScraping_${safeIdentifier}.state.json`);
+    }
+    /**
+     * Save current progress state to file for resumable operations
+     * Implements comprehensive state persistence with error handling
+     */
+    async saveState() {
+        // NEVER save state if progress saving is disabled
+        if (!this.config.progressSavingConfig?.enabled || !this.stateFilePath) {
+            this.logger.debug('Progress saving disabled or no state file path configured');
+            return;
+        }
+        this.logger.info('Attempting to save content scraping progress state...', {
+            file: this.stateFilePath
+        });
+        const state = {
+            version: '1.0',
+            timestamp: new Date().toISOString(),
+            originalArgs: this.originalJobArgs,
+            urlsToProcess: [...this.urlsToProcess], // Remaining URLs to process
+            processedUrlCount: this.processedUrlCount,
+            failedUrlDetails: [...this.failedUrlDetails],
+            rateLimiterState: this.rateLimiter?.getState(),
+            staticProxyManagerState: this.staticProxyManager?.getState(),
+        };
+        try {
+            // Ensure state directory exists - NEGATIVE SPACE PROGRAMMING
+            if (!this.stateFilePath) {
+                throw new Error('State file path is null');
+            }
+            await fs.mkdir(path.dirname(this.stateFilePath), { recursive: true });
+            // Write state file atomically
+            await fs.writeFile(this.stateFilePath, JSON.stringify(state, null, 2), 'utf-8');
+            this.logger.info('Content scraping progress state saved successfully.', {
+                remainingUrls: this.urlsToProcess.length,
+                processedCount: this.processedUrlCount,
+                failedCount: this.failedUrlDetails.length
+            });
+        }
+        catch (error) {
+            this.logger.error('CRITICAL: Failed to save content scraping progress state.', {
+                error: getErrorMessage(error),
+                stateFile: this.stateFilePath
+            });
+        }
+    }
+    /**
+     * Load progress state from file for operation resumption
+     * Implements comprehensive state restoration with validation
+     *
+     * @returns Promise<boolean> - True if state loaded successfully
+     */
+    async loadState() {
+        // NEVER attempt to load state if progress saving is disabled
+        if (!this.config.progressSavingConfig?.enabled || !this.stateFilePath) {
+            return false;
+        }
+        try {
+            // Check if state file exists - NEGATIVE SPACE PROGRAMMING
+            if (!this.stateFilePath) {
+                return false;
+            }
+            await fs.access(this.stateFilePath);
+            this.logger.info('Loading content scraping progress state...', {
+                file: this.stateFilePath
+            });
+            const fileContent = await fs.readFile(this.stateFilePath, 'utf-8');
+            const state = JSON.parse(fileContent);
+            // Validate state version and compatibility
+            if (state.version !== '1.0') {
+                this.logger.warn('Content scraping state file incompatible version. Starting fresh.', {
+                    foundVersion: state.version,
+                    expectedVersion: '1.0'
+                });
+                await this.cleanupInvalidStateFile();
+                return false;
+            }
+            // Restore state properties
+            this.urlsToProcess = state.urlsToProcess || [];
+            this.processedUrlCount = state.processedUrlCount || 0;
+            this.failedUrlDetails = state.failedUrlDetails || [];
+            // Restore utility states
+            this.rateLimiter?.loadState(state.rateLimiterState);
+            this.staticProxyManager?.loadState(state.staticProxyManagerState);
+            this.logger.info('Content scraping state loaded successfully.', {
+                remainingUrls: this.urlsToProcess.length,
+                processedCount: this.processedUrlCount,
+                failedCount: this.failedUrlDetails.length
+            });
+            return true;
+        }
+        catch (error) {
+            if (error.code === 'ENOENT') {
+                this.logger.info('No existing content scraping state file found.', {
+                    file: this.stateFilePath
+                });
+            }
+            else {
+                this.logger.error('Failed to load/parse content scraping state. Starting fresh.', {
+                    error: getErrorMessage(error),
+                    stateFile: this.stateFilePath
+                });
+                await this.cleanupInvalidStateFile();
+            }
+            return false;
+        }
+    }
+    /**
+     * Clean up invalid or corrupted state file - NEGATIVE SPACE PROGRAMMING
+     */
+    async cleanupInvalidStateFile() {
+        if (this.stateFilePath) {
+            try {
+                await fs.unlink(this.stateFilePath);
+                this.logger.info('Removed invalid state file', { file: this.stateFilePath });
+            }
+            catch (cleanupError) {
+                this.logger.warn('Failed to remove invalid state file', {
+                    error: getErrorMessage(cleanupError),
+                    file: this.stateFilePath
+                });
+            }
+        }
+    }
+    /**
+     * Perform graceful shutdown with state preservation
+     * Handles SIGINT, SIGTERM signals and error conditions
+     *
+     * @param error - Optional error that triggered shutdown
+     * @param signal - Signal that triggered shutdown (SIGINT, SIGTERM)
+     */
+    async performShutdown(error, signal) {
+        // NEVER perform shutdown multiple times
+        if (this.isShuttingDown) {
+            return;
+        }
+        this.isShuttingDown = true;
+        this.logger.info('Initiating graceful content scraping shutdown...', {
+            signal,
+            hasError: !!error,
+            errorMessage: error ? getErrorMessage(error) : undefined
+        });
+        try {
+            // Save current progress state
+            await this.saveState();
+            // Clean up signal handlers
+            process.removeListener('SIGINT', this.boundHandleSigint);
+            process.removeListener('SIGTERM', this.boundHandleSigterm);
+            this.logger.info('Content scraping shutdown completed successfully.');
+        }
+        catch (shutdownError) {
+            this.logger.error('Error during shutdown process', {
+                error: getErrorMessage(shutdownError)
+            });
+        }
+        // If shutdown was triggered by a signal, exit the process
+        if (signal) {
+            process.exit(0);
+        }
+    }
+    /**
+     * Main scraping orchestration method with state management and robust shutdown
      * Processes multiple URLs with batch processing, error tracking, and progress reporting
      *
      * @param args - Scraping arguments from MCP tool
@@ -85,59 +283,98 @@ export class ContentScrapingEngine {
     async scrapeUrls(args, context) {
         const { reportProgress, log } = context;
         const startTime = Date.now();
+        // Initialize state management
+        this.originalJobArgs = { ...args };
+        this.isShuttingDown = false;
+        this.processedInCurrentSessionCounter = 0;
         try {
-            log.info('Starting content scraping operation', {
+            log.info('Starting content scraping operation with state management', {
                 urlCount: args.urls?.length || 'from file',
                 outputFormats: args.outputFormats,
-                maxConcurrent: args.maxConcurrent
+                maxConcurrent: args.maxConcurrent,
+                stateManagementEnabled: this.config.progressSavingConfig?.enabled || false
             });
-            // Prepare URL list from input sources
-            const urlsToProcess = await this.prepareUrlList(args);
-            // Assert URL list validity
-            if (!urlsToProcess || urlsToProcess.length === 0) {
+            // Set up state file path if progress saving is enabled
+            if (this.config.progressSavingConfig?.enabled) {
+                const jobIdentifier = args.jobId || this.generateJobIdentifier(args);
+                this.stateFilePath = this.generateStateFilePath(jobIdentifier);
+            }
+            // Attempt to load existing state
+            const stateLoaded = await this.loadState();
+            // Prepare URL list if not resuming or if no URLs to process
+            if (!stateLoaded || this.urlsToProcess.length === 0) {
+                this.urlsToProcess = await this.prepareUrlList(args);
+                this.processedUrlCount = 0;
+                this.failedUrlDetails = [];
+            }
+            // Assert URL list validity - NEGATIVE SPACE PROGRAMMING
+            if (!this.urlsToProcess || this.urlsToProcess.length === 0) {
                 throw new Error('No valid URLs provided for scraping');
             }
-            log.info('URL preparation completed', { totalUrls: urlsToProcess.length });
+            // Install signal handlers for graceful shutdown
+            process.on('SIGINT', this.boundHandleSigint);
+            process.on('SIGTERM', this.boundHandleSigterm);
+            log.info('URL preparation completed', {
+                totalUrls: this.urlsToProcess.length,
+                resumedFromState: stateLoaded
+            });
             // Organize output directory structure
             await this.contentExtractor.organizeOutputFiles();
-            // Initialize progress tracking
-            let processedCount = 0;
-            const totalUrls = urlsToProcess.length;
+            const totalUrls = this.urlsToProcess.length + this.processedUrlCount;
             // Set up concurrency control
             const limit = pLimit(args.maxConcurrent || this.config.maxConcurrentPages);
-            // Process URLs in batches with concurrency control
-            const scrapingPromises = urlsToProcess.map(url => limit(async () => {
+            // Main processing loop with comprehensive error handling
+            const scrapingPromises = this.urlsToProcess.map(url => limit(async () => {
+                // Check shutdown status before processing each URL
+                if (this.isShuttingDown) {
+                    return null;
+                }
                 try {
                     const result = await this.processIndividualUrl(url, args);
-                    processedCount++;
+                    this.processedUrlCount++;
                     // Report progress to Claude Desktop
                     reportProgress({
-                        progress: processedCount,
+                        progress: this.processedUrlCount,
                         total: totalUrls
-                    });
-                    this.processedUrls.push({
-                        url,
-                        status: 'success',
-                        result,
-                        processedAt: new Date().toISOString()
                     });
                     return result;
                 }
                 catch (error) {
                     // Track failed URL with detailed error information
-                    this.failedUrls.push({
+                    this.failedUrlDetails.push({
                         url,
                         error: getErrorMessage(error),
                         failedAt: new Date().toISOString(),
                         retryCount: 0
                     });
                     log.warn('URL processing failed', { url, error: getErrorMessage(error) });
-                    processedCount++;
+                    this.processedUrlCount++;
                     reportProgress({
-                        progress: processedCount,
+                        progress: this.processedUrlCount,
                         total: totalUrls
                     });
                     return null;
+                }
+                finally {
+                    // Check if shutdown was initiated during processing
+                    if (this.isShuttingDown) {
+                        return null;
+                    }
+                    this.processedInCurrentSessionCounter++;
+                    // Auto-save progress at configured intervals
+                    const autoSaveInterval = this.config.progressSavingConfig?.autoSaveIntervalCount;
+                    if (this.config.progressSavingConfig?.enabled &&
+                        autoSaveInterval &&
+                        this.processedInCurrentSessionCounter % autoSaveInterval === 0) {
+                        if (!this.isShuttingDown) {
+                            await this.saveState();
+                        }
+                    }
+                    // Remove processed URL from the list
+                    const urlIndex = this.urlsToProcess.indexOf(url);
+                    if (urlIndex > -1) {
+                        this.urlsToProcess.splice(urlIndex, 1);
+                    }
                 }
             }));
             // Wait for all processing to complete
@@ -148,16 +385,16 @@ export class ContentScrapingEngine {
                 .map(result => result.value)
                 .filter(value => value !== null);
             const finalResults = {
-                totalUrls: urlsToProcess.length,
+                totalUrls: totalUrls,
                 processedUrls: successfulResults.length,
-                failedUrls: this.failedUrls.length,
+                failedUrls: this.failedUrlDetails.length,
                 extractedContent: successfulResults,
-                failedUrlDetails: this.failedUrls,
+                failedUrlDetails: this.failedUrlDetails,
                 processingTime: Date.now() - startTime,
                 outputFormats: args.outputFormats || ['text'],
                 summary: this.generateProcessingSummary(successfulResults)
             };
-            log.info('Content scraping completed', {
+            log.info('Content scraping completed successfully', {
                 totalUrls: finalResults.totalUrls,
                 successful: finalResults.processedUrls,
                 failed: finalResults.failedUrls,
@@ -168,62 +405,32 @@ export class ContentScrapingEngine {
         catch (error) {
             const errorMessage = getErrorMessage(error);
             log.error('Content scraping operation failed', { error: errorMessage });
+            await this.performShutdown(error);
             throw new Error(`Content scraping failed: ${errorMessage}`);
         }
+        finally {
+            // Ensure cleanup happens even if no error occurred
+            if (!this.isShuttingDown) {
+                await this.performShutdown();
+            }
+        }
     }
     /**
-     * Prepare URL list from various input sources (array, file, or text input)
-     * Validates and normalizes URLs for processing
+     * Generate unique job identifier for state file naming
+     * Creates consistent identifier based on job parameters
      *
-     * @param args - Scraping arguments containing URL sources
-     * @returns Promise<string[]> - Validated and normalized URL list
-     * @throws Error if no valid URLs found or file reading fails
+     * @param args - Job arguments to generate identifier from
+     * @returns string - Unique job identifier
      */
-    async prepareUrlList(args) {
-        try {
-            let urls = [];
-            // Handle URLs from array parameter
-            if (args.urls && Array.isArray(args.urls) && args.urls.length > 0) {
-                urls = args.urls;
-            }
-            // Handle URLs from file parameter
-            else if (args.urlFile && typeof args.urlFile === 'string') {
-                const fileContent = await fs.readFile(args.urlFile, 'utf-8');
-                urls = fileContent
-                    .split('\n')
-                    .map(line => line.trim())
-                    .filter(line => line.length > 0 && !line.startsWith('#'));
-            }
-            // Validate and normalize URLs
-            const validUrls = [];
-            for (const url of urls) {
-                const normalizedUrl = UrlUtils.normalizeUrl(url);
-                if (normalizedUrl && UrlUtils.isValidUrl(normalizedUrl)) {
-                    validUrls.push(normalizedUrl);
-                }
-                else {
-                    this.logger.warn('Invalid URL skipped during preparation', { url });
-                }
-            }
-            // Assert valid URLs found
-            if (validUrls.length === 0) {
-                throw new Error('No valid URLs found in provided input sources');
-            }
-            this.logger.info('URL list prepared successfully', {
-                originalCount: urls.length,
-                validCount: validUrls.length
-            });
-            return validUrls;
-        }
-        catch (error) {
-            const errorMessage = getErrorMessage(error);
-            this.logger.error('Failed to prepare URL list', { error: errorMessage });
-            throw new Error(`URL preparation failed: ${errorMessage}`);
-        }
+    generateJobIdentifier(args) {
+        const timestamp = Date.now();
+        const urlCount = args.urls?.length || 0;
+        const formats = (args.outputFormats || ['text']).join('_');
+        return `job_${timestamp}_${urlCount}urls_${formats}`;
     }
     /**
-     * Process individual URL with comprehensive content extraction
-     * Handles page loading, content extraction, and output generation
+     * Process individual URL with comprehensive content extraction and rate limiting
+     * Handles page loading, content extraction, and output generation with proxy support
      *
      * @param url - URL to process
      * @param args - Processing arguments and options
@@ -233,11 +440,26 @@ export class ContentScrapingEngine {
     async processIndividualUrl(url, args) {
         let browser = null;
         let page = null;
+        let currentProxyIp;
+        // Extract hostname for rate limiting and proxy management
+        const hostname = UrlUtils.extractHostname(url);
         try {
-            this.logger.debug('Processing individual URL', { url });
-            // Launch browser and create page
-            browser = await this.browserManager.launchBrowser();
-            page = await this.browserManager.createPage(browser);
+            this.logger.debug('Processing individual URL with state management', { url });
+            // Get proxy for this hostname if static proxy manager is configured
+            if (this.staticProxyManager) {
+                currentProxyIp = this.staticProxyManager.getProxyForHost(hostname);
+            }
+            // Apply rate limiting before making request
+            if (this.rateLimiter) {
+                await this.rateLimiter.waitForSlot(hostname, currentProxyIp);
+            }
+            // Launch browser and create page with proxy support
+            browser = await this.browserManager.launchBrowser(currentProxyIp);
+            page = await this.browserManager.createPage(browser, currentProxyIp);
+            // Record the request in rate limiter
+            if (this.rateLimiter) {
+                this.rateLimiter.recordRequest(hostname, currentProxyIp);
+            }
             // Navigate to URL with timeout
             await page.goto(url, {
                 waitUntil: 'networkidle0',
@@ -267,8 +489,27 @@ export class ContentScrapingEngine {
             return result;
         }
         catch (error) {
-            this.logger.error('Individual URL processing failed', { url, error: getErrorMessage(error) });
-            throw new Error(`Processing failed for ${url}: ${getErrorMessage(error)}`);
+            const errorMessage = getErrorMessage(error);
+            // Handle specific error types for rate limiting and proxy management
+            if (errorMessage.includes('429') || errorMessage.includes('Too Many Requests')) {
+                this.logger.warn('Rate limiting error detected', { url, hostname, error: errorMessage });
+                if (this.rateLimiter) {
+                    this.rateLimiter.initiateHostBackoff(hostname);
+                    if (currentProxyIp) {
+                        this.rateLimiter.initiateIpBackoff(currentProxyIp);
+                    }
+                }
+            }
+            else if (errorMessage.includes('net::ERR_ABORTED') || errorMessage.includes('net::ERR_CONNECTION')) {
+                this.logger.warn('Connection error detected', { url, hostname, proxyUrl: currentProxyIp, error: errorMessage });
+                if (currentProxyIp && this.staticProxyManager) {
+                    this.staticProxyManager.reportPermanentIpFailure(currentProxyIp);
+                }
+                if (this.rateLimiter && currentProxyIp) {
+                    this.rateLimiter.initiateIpBackoff(currentProxyIp);
+                }
+            }
+            throw new Error(`Processing failed for ${url}: ${errorMessage}`);
         }
         finally {
             // Clean up resources
@@ -278,6 +519,56 @@ export class ContentScrapingEngine {
             if (browser) {
                 await this.browserManager.closeBrowser(browser);
             }
+        }
+    }
+    /**
+     * Prepare URL list from various input sources (array, file, or text input)
+     * Validates and normalizes URLs for processing
+     *
+     * @param args - Scraping arguments containing URL sources
+     * @returns Promise<string[]> - Validated and normalized URL list
+     * @throws Error if no valid URLs found or file reading fails
+     */
+    async prepareUrlList(args) {
+        try {
+            let urls = [];
+            // Handle URLs from array parameter
+            if (args.urls && Array.isArray(args.urls) && args.urls.length > 0) {
+                urls = args.urls;
+            }
+            // Handle URLs from file parameter
+            else if (args.urlFile && typeof args.urlFile === 'string') {
+                const fileContent = await fs.readFile(args.urlFile, 'utf-8');
+                urls = fileContent
+                    .split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line.length > 0 && !line.startsWith('#'));
+            }
+            // Validate and normalize URLs - NEGATIVE SPACE PROGRAMMING
+            const validUrls = [];
+            for (const url of urls) {
+                const normalizedUrl = UrlUtils.normalizeUrl(url);
+                if (normalizedUrl && UrlUtils.isValidUrl(normalizedUrl)) {
+                    validUrls.push(normalizedUrl);
+                }
+                else {
+                    this.logger.warn('Invalid URL skipped during preparation', { url });
+                }
+            }
+            // Assert valid URLs found - NEGATIVE SPACE PROGRAMMING
+            if (validUrls.length === 0) {
+                throw new Error('No valid URLs found in provided input sources');
+            }
+            this.logger.info('URL list prepared successfully', {
+                originalCount: urls.length,
+                validCount: validUrls.length
+            });
+            return validUrls;
+        }
+        catch (error) {
+            const errorMessage = getErrorMessage(error);
+            this.logger.error('Failed to prepare URL list', { error: errorMessage });
+            throw new Error(`URL preparation failed: ${errorMessage}`);
         }
     }
     /**
@@ -378,14 +669,14 @@ export class ContentScrapingEngine {
      * @returns FailedUrl[] - Array of failed URL entries with error details
      */
     getFailedUrls() {
-        return [...this.failedUrls];
+        return [...this.failedUrlDetails];
     }
     /**
      * Clear failed URLs list for retry operations
      * Allows resetting failed URL tracking
      */
     clearFailedUrls() {
-        this.failedUrls = [];
+        this.failedUrlDetails = [];
     }
     /**
      * Get processing statistics for monitoring and reporting
@@ -395,14 +686,16 @@ export class ContentScrapingEngine {
      */
     getProcessingStats() {
         return {
-            processedCount: this.processedUrls.length,
-            failedCount: this.failedUrls.length,
+            processedCount: this.processedUrlCount,
+            failedCount: this.failedUrlDetails.length,
+            remainingUrls: this.urlsToProcess.length,
+            stateManagementEnabled: this.config.progressSavingConfig?.enabled || false,
             configuration: {
                 maxConcurrentPages: this.config.maxConcurrentPages,
                 navigationTimeout: this.config.navigationTimeout,
                 outputBasePath: this.config.outputBasePath
             },
-            recentFailures: this.failedUrls.slice(-5) // Last 5 failures
+            recentFailures: this.failedUrlDetails.slice(-5) // Last 5 failures
         };
     }
 }

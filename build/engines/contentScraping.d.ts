@@ -1,19 +1,61 @@
 import { ScrapingConfig } from '../config.js';
 import { ExtractedContent } from '../utils/contentExtractor.js';
+import { FailedUrl } from '../types/state.js';
 /**
- * Complete Content Scraping Engine preserving all Scrape URL File functionality
- * Handles batch URL processing with comprehensive error tracking and content extraction
+ * Complete Content Scraping Engine with state management and robust shutdown
+ * Handles batch URL processing with comprehensive error tracking and resumable operations
  */
 export declare class ContentScrapingEngine {
     private config;
     private logger;
     private browserManager;
     private contentExtractor;
-    private failedUrls;
-    private processedUrls;
+    private rateLimiter?;
+    private staticProxyManager?;
+    private urlsToProcess;
+    private processedUrlCount;
+    private failedUrlDetails;
+    private processedInCurrentSessionCounter;
+    private stateFilePath;
+    private originalJobArgs;
+    private isShuttingDown;
+    private boundHandleSigint;
+    private boundHandleSigterm;
     constructor(config: ScrapingConfig);
     /**
-     * Main scraping orchestration method - Complete Scrape URL File functionality
+     * Generate unique state file path for this scraping job
+     * Creates identifier based on job parameters for state persistence
+     *
+     * @param jobIdentifier - Unique identifier for this scraping job
+     * @returns string - Full path to state file
+     */
+    private generateStateFilePath;
+    /**
+     * Save current progress state to file for resumable operations
+     * Implements comprehensive state persistence with error handling
+     */
+    private saveState;
+    /**
+     * Load progress state from file for operation resumption
+     * Implements comprehensive state restoration with validation
+     *
+     * @returns Promise<boolean> - True if state loaded successfully
+     */
+    private loadState;
+    /**
+     * Clean up invalid or corrupted state file - NEGATIVE SPACE PROGRAMMING
+     */
+    private cleanupInvalidStateFile;
+    /**
+     * Perform graceful shutdown with state preservation
+     * Handles SIGINT, SIGTERM signals and error conditions
+     *
+     * @param error - Optional error that triggered shutdown
+     * @param signal - Signal that triggered shutdown (SIGINT, SIGTERM)
+     */
+    private performShutdown;
+    /**
+     * Main scraping orchestration method with state management and robust shutdown
      * Processes multiple URLs with batch processing, error tracking, and progress reporting
      *
      * @param args - Scraping arguments from MCP tool
@@ -23,6 +65,24 @@ export declare class ContentScrapingEngine {
      */
     scrapeUrls(args: any, context: any): Promise<ScrapingResults>;
     /**
+     * Generate unique job identifier for state file naming
+     * Creates consistent identifier based on job parameters
+     *
+     * @param args - Job arguments to generate identifier from
+     * @returns string - Unique job identifier
+     */
+    private generateJobIdentifier;
+    /**
+     * Process individual URL with comprehensive content extraction and rate limiting
+     * Handles page loading, content extraction, and output generation with proxy support
+     *
+     * @param url - URL to process
+     * @param args - Processing arguments and options
+     * @returns Promise<ExtractedContent> - Extraction results
+     * @throws Error if processing fails for the URL
+     */
+    private processIndividualUrl;
+    /**
      * Prepare URL list from various input sources (array, file, or text input)
      * Validates and normalizes URLs for processing
      *
@@ -31,16 +91,6 @@ export declare class ContentScrapingEngine {
      * @throws Error if no valid URLs found or file reading fails
      */
     private prepareUrlList;
-    /**
-     * Process individual URL with comprehensive content extraction
-     * Handles page loading, content extraction, and output generation
-     *
-     * @param url - URL to process
-     * @param args - Processing arguments and options
-     * @returns Promise<ExtractedContent> - Extraction results
-     * @throws Error if processing fails for the URL
-     */
-    private processIndividualUrl;
     /**
      * Perform auto-scrolling to load dynamic content
      * Preserves original module auto-scrolling functionality
@@ -103,24 +153,6 @@ export interface ScrapingResults {
     processingTime: number;
     outputFormats: string[];
     summary: ProcessingSummary;
-}
-/**
- * Interface for failed URL tracking
- */
-export interface FailedUrl {
-    url: string;
-    error: string;
-    failedAt: string;
-    retryCount: number;
-}
-/**
- * Interface for processed URL tracking
- */
-export interface ProcessedUrl {
-    url: string;
-    status: 'success' | 'failed';
-    result: ExtractedContent | null;
-    processedAt: string;
 }
 /**
  * Interface for processing summary statistics
