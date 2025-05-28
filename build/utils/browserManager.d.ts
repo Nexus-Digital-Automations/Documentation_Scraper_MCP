@@ -1,7 +1,7 @@
 import { Browser, Page } from 'puppeteer';
 import { ScrapingConfig } from '../config.js';
 /**
- * Comprehensive browser lifecycle management preserving all original functionality
+ * Enhanced browser lifecycle management with Rayobyte static proxy support
  * Handles browser launching, page creation, resource monitoring, and cleanup
  */
 export declare class BrowserManager {
@@ -12,64 +12,33 @@ export declare class BrowserManager {
     private memoryMonitoringInterval?;
     constructor(config: ScrapingConfig);
     /**
-     * Launch browser with comprehensive stealth configuration
-     * Applies all browser settings from configuration while maintaining stealth capabilities
+     * Launch browser with comprehensive stealth configuration and optional proxy support
+     * Integrates Rayobyte static IP configuration for enhanced scraping capabilities
      *
+     * @param proxyServerUrl - Optional proxy server URL for Rayobyte static IP usage
      * @returns Promise<Browser> - Configured Puppeteer browser instance
      * @throws Error if browser launch fails or configuration is invalid
      */
-    launchBrowser(): Promise<Browser>;
+    launchBrowser(proxyServerUrl?: string): Promise<Browser>;
     /**
-     * Create new page with default configuration and stealth settings
-     * Applies consistent page configuration while maintaining anti-detection capabilities
+     * Create new page with default configuration, stealth settings, and proxy authentication
      *
      * @param browser - Browser instance to create page in
+     * @param proxyServerUrl - Optional proxy URL for authentication handling
      * @returns Promise<Page> - Configured Puppeteer page instance
-     * @throws Error if page creation fails or browser is invalid
      */
-    createPage(browser: Browser): Promise<Page>;
+    createPage(browser: Browser, proxyServerUrl?: string): Promise<Page>;
     /**
      * Configure page with default settings for consistent behavior
-     * Applies timeouts, viewport, and anti-detection measures
-     *
-     * @param page - Page instance to configure
      */
     private configurePageDefaults;
     /**
-     * Safely close page and remove from active pages tracking
-     * Ensures proper resource cleanup to prevent memory leaks
-     *
-     * @param page - Page instance to close
+     * Check if proxy URL contains authentication credentials
      */
-    closePage(page: Page): Promise<void>;
+    private containsProxyCredentials;
     /**
-     * Safely close browser and remove from active browsers tracking
-     * Ensures all pages are closed before browser closure
-     *
-     * @param browser - Browser instance to close
+     * Extract proxy credentials from URL
      */
-    closeBrowser(browser: Browser): Promise<void>;
-    /**
-     * Start memory monitoring with automatic cleanup triggers
-     * Prevents resource exhaustion during large-scale operations
-     */
-    private startMemoryMonitoring;
-    /**
-     * Handle browser memory cleanup when thresholds are exceeded
-     * Closes inactive resources to maintain system stability
-     */
-    private handleBrowserMemoryCleanup;
-    /**
-     * Get current resource usage statistics for monitoring
-     * Provides insights into browser and page resource consumption
-     *
-     * @returns Object containing resource usage statistics
-     */
-    getResourceStats(): object;
-    /**
-     * Cleanup all resources and stop monitoring
-     * Should be called during shutdown to prevent resource leaks
-     */
-    cleanup(): Promise<void>;
+    private extractProxyCredentials;
 }
 //# sourceMappingURL=browserManager.d.ts.map

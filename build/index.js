@@ -76,7 +76,14 @@ server.addTool({
         enableStealth: z.boolean().default(true),
         userAgentRotation: z.boolean().default(true),
         languageFilter: z.string().optional().describe("ISO language code (e.g., 'en', 'fr')"),
-        minimumConfidence: z.number().min(0).max(1).default(0.7)
+        minimumConfidence: z.number().min(0).max(1).default(0.7),
+        sessionTextBasedClickTargets: z.array(z.object({
+            clickTargetSelector: z.string().describe("CSS selector for the element to click"),
+            textMatchSelector: z.string().optional().describe("Optional CSS selector for element containing text to match"),
+            textIncludes: z.array(z.string()).describe("Array of text strings that must be present"),
+            caseSensitive: z.boolean().default(false).describe("Whether text matching should be case-sensitive"),
+            matchType: z.enum(['any', 'all']).default('any').describe("Whether to match any or all text strings")
+        })).optional().describe("Session-specific text-based click targets")
     }),
     execute: async (args, { reportProgress, log }) => {
         try {

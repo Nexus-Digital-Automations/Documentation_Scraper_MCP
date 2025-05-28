@@ -6,7 +6,7 @@
 // Defines TypeScript interfaces and default settings for all system components.
 //
 // DEPENDENCIES:
-// - None (core configuration module)
+// - path: Path manipulation for state file directory resolution
 //
 // EXPECTED INTERFACES:
 // - ScrapingConfig: Main configuration interface
@@ -24,6 +24,7 @@
 // - Default configuration must preserve original module functionality
 // - Configuration changes must maintain type safety
 // ============================================================================
+import path from 'path';
 /**
  * Default configuration consolidating settings from both original Python modules
  * Maintains all original functionality while providing type-safe defaults
@@ -92,7 +93,80 @@ export const DEFAULT_CONFIG = {
             format: 'A4',
             printBackground: true,
             margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' }
-        }
+        },
+        // Add the default for the new property:
+        selectorsToExcludeFromText: [
+            "header",
+            "footer",
+            "nav",
+            "aside", // Common tag for sidebars
+            ".sidebar", // Common class for sidebars
+            "#sidebar", // Common ID for sidebars
+            ".cookie-banner", // Common class for cookie banners
+            ".cookie-consent", // Common class for cookie banners
+            "#gdpr-consent", // Common ID for GDPR banners
+            "[role='banner']", // ARIA role for headers
+            "[role='contentinfo']", // ARIA role for footers
+            "[role='navigation']", // ARIA role for navigation
+            "[role='complementary']" // ARIA role for asides/sidebars
+        ],
+        customToggleSelectors: [], // Empty by default, can be customized per use case
+        maxToggleIterations: 3, // Maximum nested toggle expansion iterations
+        toggleExpansionTimeout: 5000, // 5 second timeout for expansion verification
+        textBasedClickTargets: [ // Example patterns for common use cases
+        // {
+        //   clickTargetSelector: ".expandable-section-header",
+        //   textMatchSelector: "h2.title", 
+        //   textIncludes: ["Details", "More Information"],
+        //   caseSensitive: false,
+        //   matchType: 'any'
+        // },
+        // {
+        //   clickTargetSelector: "button.show-comments",
+        //   textIncludes: ["Show Comments", "View Replies"],
+        //   caseSensitive: false
+        // }
+        ], // Empty by default, can be configured per session or globally
+        structuredDataSchemas: [], // Empty by default, can be configured per use case
+        enableStructuredExtraction: false // Disabled by default to maintain performance
+    },
+    pageInteraction: {
+        loadWaitConditions: [],
+        postClickWaitConditions: [],
+        customInteractionSequences: {},
+        defaultNetworkIdleTimeout: 5000,
+        defaultElementTimeout: 10000,
+        enableAdvancedWaiting: false
+    },
+    changeDetection: {
+        enabled: false,
+        storageBackend: 'file',
+        storagePath: '/Users/jeremyparker/Documents/MCP_Scraper_Output/change_detection',
+        hashAlgorithm: 'sha256',
+        retentionDays: 30,
+        monitoringSelectors: ['main', '.content', '.article'],
+        notificationThreshold: 5, // 5% change threshold
+        excludeFromHashing: ['.timestamp', '.date', '.ad', '.advertisement']
+    },
+    proxyConfig: {
+        staticProxies: [], // User will populate this with their Rayobyte static IPs
+        // Example: ["http://your_rayobyte_static_ip1:port", "http://user:pass@your_rayobyte_static_ip2:port"]
+        assignmentStrategy: 'stickyByHost',
+    },
+    rateLimitConfig: {
+        enabled: true,
+        maxRequestsPerMinutePerHost: 15, // Be conservative: 15 requests per minute per host
+        // maxRequestsPerMinutePerIp: 60, // Optional: 1 request per second per IP globally
+        minDelayMsPerHost: 2000, // Minimum 2 seconds between requests to the same host
+        maxRandomDelayMsPerHost: 3000, // Additional random delay up to 3 seconds
+        hostBackoffMsOnError: 60000 * 5, // Back off for 5 minutes for a host on error
+        ipBackoffMsOnError: 60000 * 10, // Rest an IP for 10 minutes on error
+    },
+    progressSavingConfig: {
+        enabled: true,
+        // stateFileBaseDir will be derived from outputBasePath if not set explicitly
+        // stateFileBaseDir: path.join(DEFAULT_CONFIG.outputBasePath, 'scraper_states'), // Can't reference DEFAULT_CONFIG here directly
+        autoSaveIntervalCount: 100, // Save progress every 100 URLs discovered/processed
     }
 };
 /**
@@ -169,6 +243,17 @@ export function validateConfiguration(config) {
  */
 export function cloneConfiguration(config) {
     return JSON.parse(JSON.stringify(config));
+}
+/**
+ * Get the state file base directory with proper fallback handling
+ * Provides consistent state file directory resolution
+ *
+ * @param config - Configuration containing progress saving settings
+ * @returns string - Resolved state file base directory path
+ */
+export function getStateFileBaseDir(config) {
+    return config.progressSavingConfig?.stateFileBaseDir ||
+        path.join(config.outputBasePath, 'scraper_states');
 }
 // Export singleton configuration instances for global access
 // These maintain immutability while providing convenient access patterns

@@ -43,6 +43,15 @@ export declare class ContentExtractor {
      */
     generatePdfFromPage(page: Page, url: string, customOptions?: any): Promise<ExtractedContent>;
     /**
+     * Remove elements from page DOM based on exclusion selectors
+     * Implements proactive content filtering before text extraction
+     *
+     * @param page - Puppeteer page instance to modify
+     * @param url - Source URL for logging context
+     * @throws Error if DOM modification fails
+     */
+    private removeExcludedElements;
+    /**
      * Extract content using CSS selectors with fallback strategies
      * Implements comprehensive selector-based extraction logic
      *

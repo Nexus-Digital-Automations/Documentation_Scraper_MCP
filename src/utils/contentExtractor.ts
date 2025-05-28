@@ -107,7 +107,10 @@ export class ContentExtractor {
         throw new Error('Valid URL is required for content extraction');
       }
 
-      // Extract content using configured or custom selectors
+      // Step 1: Apply Selector-Based Exclusion before content extraction
+      await this.removeExcludedElements(page, url);
+
+      // Step 2: Extract content using configured or custom selectors after exclusions
       const selectors = customSelectors || this.config.contentExtraction.selectors;
       const extractedContent = await this.extractUsingSelectors(page, selectors);
       
@@ -234,6 +237,73 @@ export class ContentExtractor {
         { logLevel: 'ERROR' }
       );
       throw new Error(`PDF generation failed for ${url}: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Remove elements from page DOM based on exclusion selectors
+   * Implements proactive content filtering before text extraction
+   * 
+   * @param page - Puppeteer page instance to modify
+   * @param url - Source URL for logging context
+   * @throws Error if DOM modification fails
+   */
+  private async removeExcludedElements(page: Page, url: string): Promise<void> {
+    try {
+      // Get the selectors to exclude from the configuration
+      const selectorsToExclude = this.config.contentExtraction.selectorsToExcludeFromText;
+
+      if (selectorsToExclude && selectorsToExclude.length > 0) {
+        this.logger.info(
+          `Attempting to remove ${selectorsToExclude.length} patterns of excluded elements from DOM`,
+          { url, selectors: selectorsToExclude }
+        );
+        
+        try {
+          // This function will be executed in the browser's context
+          await page.evaluate((selectors: string[]) => {
+            let removedCount = 0;
+            selectors.forEach(selector => {
+              try {
+                const elementsToRemove = document.querySelectorAll(selector);
+                elementsToRemove.forEach(el => {
+                  el.remove();
+                  removedCount++;
+                });
+              } catch (e) {
+                // Log error within browser context if needed, or just proceed
+                console.warn(`Error processing selector "${selector}" for removal in browser:`, e);
+              }
+            });
+            // Optionally, log how many elements were actually removed in browser console
+            console.log(`Removed ${removedCount} elements based on exclusion selectors.`);
+          }, selectorsToExclude); // Pass the selectors array as an argument to page.evaluate
+          
+          this.logger.debug(
+            'Successfully executed DOM removal script for excluded selectors',
+            { url }
+          );
+        } catch (evalError) {
+          // This error occurs if page.evaluate itself fails
+          this.logger.error(
+            'Error during page.evaluate for removing selectorsToExcludeFromText',
+            { url, error: getErrorMessage(evalError) }
+          );
+          // Depending on severity, you might choose to return or continue
+        }
+      } else {
+        this.logger.debug(
+          'No selectorsToExcludeFromText configured or list is empty',
+          { url }
+        );
+      }
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      this.logger.error(
+        `Element exclusion failed: ${errorMessage}`,
+        { url }
+      );
+      throw new Error(`Element exclusion failed for ${url}: ${errorMessage}`);
     }
   }
 

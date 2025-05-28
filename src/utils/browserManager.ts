@@ -1,42 +1,13 @@
 // ============================================================================
-// MODULE: browserManager.ts
+// MODULE: browserManager.ts - Enhanced with Rayobyte Static Proxy Support
 //
 // PURPOSE:
-// Comprehensive Puppeteer browser lifecycle management utility preserving
-// all browser functionality from both original Python modules while adding
-// enhanced stealth capabilities and resource management.
-//
-// DEPENDENCIES:
-// - puppeteer-extra: Enhanced Puppeteer with plugin support
-// - puppeteer-extra-plugin-stealth: Anti-detection capabilities
-// - ../config.js: Scraping configuration and browser settings
-//
-// EXPECTED INTERFACES:
-// - BrowserManager class with browser/page lifecycle methods
-// - Browser launching with stealth configuration
-// - Page creation and management with resource cleanup
-// - Memory monitoring and automatic cleanup capabilities
-//
-// DESIGN PATTERNS:
-// - Factory pattern for browser and page creation
-// - Resource management pattern with automatic cleanup
-// - Observer pattern for resource monitoring
-//
-// SYSTEM INVARIANTS:
-// - Browsers must be launched with stealth configuration
-// - All pages must be properly closed to prevent memory leaks
-// - Browser instances must be cleaned up after use
-// - Resource usage must be monitored and controlled
-//
-// NEGATIVE SPACE CONSIDERATIONS:
-// - NEVER launch browsers without stealth configuration
-// - NEVER leave pages or browsers unclosed
-// - NEVER exceed memory thresholds without cleanup
-// - NEVER proceed with invalid browser configurations
+// Comprehensive Puppeteer browser lifecycle management utility with integrated
+// Rayobyte static proxy support and enhanced stealth capabilities.
 // ============================================================================
 
 import puppeteer from 'puppeteer-extra';
-import { Browser, Page } from 'puppeteer';
+import { Browser, Page, PuppeteerLaunchOptions } from 'puppeteer';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { ScrapingConfig } from '../config.js';
 import { Logger, getErrorMessage } from './logger.js';
@@ -45,7 +16,7 @@ import { Logger, getErrorMessage } from './logger.js';
 puppeteer.use(StealthPlugin());
 
 /**
- * Comprehensive browser lifecycle management preserving all original functionality
+ * Enhanced browser lifecycle management with Rayobyte static proxy support
  * Handles browser launching, page creation, resource monitoring, and cleanup
  */
 export class BrowserManager {
@@ -76,13 +47,14 @@ export class BrowserManager {
   }
 
   /**
-   * Launch browser with comprehensive stealth configuration
-   * Applies all browser settings from configuration while maintaining stealth capabilities
+   * Launch browser with comprehensive stealth configuration and optional proxy support
+   * Integrates Rayobyte static IP configuration for enhanced scraping capabilities
    * 
+   * @param proxyServerUrl - Optional proxy server URL for Rayobyte static IP usage
    * @returns Promise<Browser> - Configured Puppeteer browser instance
    * @throws Error if browser launch fails or configuration is invalid
    */
-  async launchBrowser(): Promise<Browser> {
+  async launchBrowser(proxyServerUrl?: string): Promise<Browser> {
     try {
       // Assert browser configuration validity
       if (!this.config.browser.args || this.config.browser.args.length === 0) {
@@ -92,14 +64,25 @@ export class BrowserManager {
         throw new Error('Protocol timeout must be positive');
       }
 
-      const browser = await puppeteer.launch({
+      // Prepare launch options with stealth configuration
+      const launchOptions: PuppeteerLaunchOptions = {
         headless: this.config.browser.headless,
         defaultViewport: this.config.browser.defaultViewport,
-        args: this.config.browser.args,
+        args: [...this.config.browser.args],
         protocolTimeout: this.config.browser.protocolTimeout,
         ignoreDefaultArgs: ['--enable-automation'],
         ignoreHTTPSErrors: true
-      });
+      };
+
+      // Add proxy configuration if provided
+      if (proxyServerUrl) {
+        this.logger.info(`Launching browser with Rayobyte static proxy: ${proxyServerUrl}`);
+        launchOptions.args?.push(`--proxy-server=${proxyServerUrl}`);
+      } else if (this.config.proxyConfig?.staticProxies && this.config.proxyConfig.staticProxies.length > 0) {
+        this.logger.warn('Static proxies configured but no specific proxy provided for this browser launch');
+      }
+
+      const browser = await puppeteer.launch(launchOptions);
 
       // Assert browser launch success
       if (!browser) {
@@ -108,87 +91,80 @@ export class BrowserManager {
 
       this.activeBrowsers.add(browser);
       
-      this.logger.log(
-        `Browser launched successfully with stealth configuration`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'SUCCESS' }
-      );
+      const logMessage = proxyServerUrl 
+        ? `Browser launched with Rayobyte static proxy: ${proxyServerUrl}`
+        : 'Browser launched with direct connection';
+      
+      this.logger.success(logMessage);
 
       return browser;
     } catch (error) {
       const errorMessage = getErrorMessage(error);
-      this.logger.log(
-        `Browser launch failed: ${errorMessage}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'ERROR' }
-      );
+      this.logger.error(`Browser launch failed: ${errorMessage}`, { 
+        proxyUrl: proxyServerUrl,
+        hasStaticProxies: this.config.proxyConfig?.staticProxies?.length || 0
+      });
       throw new Error(`Browser launch failed: ${errorMessage}`);
     }
   }
 
   /**
-   * Create new page with default configuration and stealth settings
-   * Applies consistent page configuration while maintaining anti-detection capabilities
+   * Create new page with default configuration, stealth settings, and proxy authentication
    * 
    * @param browser - Browser instance to create page in
+   * @param proxyServerUrl - Optional proxy URL for authentication handling
    * @returns Promise<Page> - Configured Puppeteer page instance
-   * @throws Error if page creation fails or browser is invalid
    */
-  async createPage(browser: Browser): Promise<Page> {
+  async createPage(browser: Browser, proxyServerUrl?: string): Promise<Page> {
     try {
-      // Assert valid browser instance
-      if (!browser) {
-        throw new Error('Valid browser instance is required for page creation');
-      }
-      if (!browser.connected) {
-        throw new Error('Browser must be connected to create pages');
+      if (!browser || !browser.connected) {
+        throw new Error('Valid connected browser instance is required');
       }
 
       const page = await browser.newPage();
-      
-      // Assert page creation success
       if (!page) {
         throw new Error('Page creation failed - null page returned');
       }
 
-      // Configure page defaults with stealth settings
+      // Handle proxy authentication if proxy URL contains credentials
+      if (proxyServerUrl && this.containsProxyCredentials(proxyServerUrl)) {
+        try {
+          const credentials = this.extractProxyCredentials(proxyServerUrl);
+          if (credentials) {
+            await page.authenticate({
+              username: credentials.username,
+              password: credentials.password
+            });
+            this.logger.debug('Proxy authentication configured for page');
+          }
+        } catch (authError) {
+          this.logger.warn('Proxy authentication failed, continuing without auth', {
+            error: getErrorMessage(authError)
+          });
+        }
+      }
+
       await this.configurePageDefaults(page);
-      
       this.activePages.add(page);
-      
-      this.logger.log(
-        `Page created successfully with default configuration`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'DEBUG' }
-      );
+      this.logger.debug('Page created successfully with enhanced configuration');
 
       return page;
     } catch (error) {
       const errorMessage = getErrorMessage(error);
-      this.logger.log(
-        `Page creation failed: ${errorMessage}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'ERROR' }
-      );
+      this.logger.error(`Page creation failed: ${errorMessage}`);
       throw new Error(`Page creation failed: ${errorMessage}`);
     }
   }
 
   /**
    * Configure page with default settings for consistent behavior
-   * Applies timeouts, viewport, and anti-detection measures
-   * 
-   * @param page - Page instance to configure
    */
   private async configurePageDefaults(page: Page): Promise<void> {
     try {
-      // Set navigation timeouts
       page.setDefaultNavigationTimeout(this.config.navigationTimeout);
       page.setDefaultTimeout(this.config.pageLoadTimeout);
 
-      // Block unnecessary resources for performance
       await page.setRequestInterception(true);
-      
       page.on('request', (req) => {
         const resourceType = req.resourceType();
         if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
@@ -198,204 +174,49 @@ export class BrowserManager {
         }
       });
 
-      // Configure viewport to match configuration
       await page.setViewport({
         width: this.config.browser.defaultViewport.width,
         height: this.config.browser.defaultViewport.height
       });
 
-      // Override navigator properties for enhanced stealth
       await page.evaluateOnNewDocument(() => {
-        // Hide webdriver property
         Object.defineProperty(navigator, 'webdriver', {
           get: () => undefined,
         });
-
-        // Override permissions API
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters: PermissionDescriptor) => (
-          parameters.name === 'notifications' ?
-            Promise.resolve({ state: 'denied' } as PermissionStatus) :
-            originalQuery(parameters)
-        );
       });
     } catch (error) {
-      this.logger.log(
-        `Page configuration failed: ${getErrorMessage(error)}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'WARN' }
-      );
+      this.logger.warn('Page configuration failed', {
+        error: getErrorMessage(error)
+      });
     }
   }
 
   /**
-   * Safely close page and remove from active pages tracking
-   * Ensures proper resource cleanup to prevent memory leaks
-   * 
-   * @param page - Page instance to close
+   * Check if proxy URL contains authentication credentials
    */
-  async closePage(page: Page): Promise<void> {
+  private containsProxyCredentials(proxyUrl: string): boolean {
     try {
-      if (page && !page.isClosed()) {
-        await page.close();
-        this.activePages.delete(page);
-        
-        this.logger.log(
-          `Page closed successfully`,
-          '/tmp/browser_manager.log',
-          { logLevel: 'DEBUG' }
-        );
-      }
-    } catch (error) {
-      this.logger.log(
-        `Page closure failed: ${getErrorMessage(error)}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'WARN' }
-      );
+      const url = new URL(proxyUrl);
+      return !!(url.username && url.password);
+    } catch {
+      return false;
     }
   }
 
   /**
-   * Safely close browser and remove from active browsers tracking
-   * Ensures all pages are closed before browser closure
-   * 
-   * @param browser - Browser instance to close
+   * Extract proxy credentials from URL
    */
-  async closeBrowser(browser: Browser): Promise<void> {
+  private extractProxyCredentials(proxyUrl: string): { username: string; password: string } | null {
     try {
-      if (browser && browser.connected) {
-        const pages = await browser.pages();
-        
-        // Close all pages first
-        for (const page of pages) {
-          await this.closePage(page);
-        }
-        
-        await browser.close();
-        this.activeBrowsers.delete(browser);
-        
-        this.logger.log(
-          `Browser closed successfully`,
-          '/tmp/browser_manager.log',
-          { logLevel: 'SUCCESS' }
-        );
+      const url = new URL(proxyUrl);
+      if (url.username && url.password) {
+        return {
+          username: decodeURIComponent(url.username),
+          password: decodeURIComponent(url.password)
+        };
       }
-    } catch (error) {
-      this.logger.log(
-        `Browser closure failed: ${getErrorMessage(error)}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'WARN' }
-      );
+      return null;
+    } catch {
+      return null;
     }
   }
-
-  /**
-   * Start memory monitoring with automatic cleanup triggers
-   * Prevents resource exhaustion during large-scale operations
-   */
-  private startMemoryMonitoring(): void {
-    this.memoryMonitoringInterval = setInterval(async () => {
-      await this.handleBrowserMemoryCleanup();
-    }, this.config.resourceMonitoring.cleanupIntervalMS);
-  }
-
-  /**
-   * Handle browser memory cleanup when thresholds are exceeded
-   * Closes inactive resources to maintain system stability
-   */
-  private async handleBrowserMemoryCleanup(): Promise<void> {
-    try {
-      const memoryUsage = process.memoryUsage();
-      const heapUsedMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
-      
-      if (heapUsedMB > this.config.resourceMonitoring.memoryThresholdMB) {
-        this.logger.log(
-          `Memory threshold exceeded (${heapUsedMB}MB), initiating cleanup`,
-          '/tmp/browser_manager.log',
-          { logLevel: 'WARN' }
-        );
-        
-        // Force garbage collection if available
-        if (global.gc) {
-          global.gc();
-        }
-        
-        // Close excess pages if many are active
-        if (this.activePages.size > 10) {
-          let closedCount = 0;
-          for (const page of this.activePages) {
-            if (closedCount >= 5) break; // Close up to 5 pages
-            await this.closePage(page);
-            closedCount++;
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.log(
-        `Memory cleanup failed: ${getErrorMessage(error)}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'ERROR' }
-      );
-    }
-  }
-
-  /**
-   * Get current resource usage statistics for monitoring
-   * Provides insights into browser and page resource consumption
-   * 
-   * @returns Object containing resource usage statistics
-   */
-  getResourceStats(): object {
-    const memoryUsage = process.memoryUsage();
-    
-    return {
-      activeBrowsers: this.activeBrowsers.size,
-      activePages: this.activePages.size,
-      memoryUsage: {
-        heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
-        heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
-        external: Math.round(memoryUsage.external / 1024 / 1024),
-        rss: Math.round(memoryUsage.rss / 1024 / 1024)
-      },
-      configuration: {
-        memoryThreshold: this.config.resourceMonitoring.memoryThresholdMB,
-        cleanupInterval: this.config.resourceMonitoring.cleanupIntervalMS
-      }
-    };
-  }
-
-  /**
-   * Cleanup all resources and stop monitoring
-   * Should be called during shutdown to prevent resource leaks
-   */
-  async cleanup(): Promise<void> {
-    try {
-      // Stop memory monitoring
-      if (this.memoryMonitoringInterval) {
-        clearInterval(this.memoryMonitoringInterval);
-      }
-      
-      // Close all active pages
-      for (const page of this.activePages) {
-        await this.closePage(page);
-      }
-      
-      // Close all active browsers
-      for (const browser of this.activeBrowsers) {
-        await this.closeBrowser(browser);
-      }
-      
-      this.logger.log(
-        `BrowserManager cleanup completed successfully`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'SUCCESS' }
-      );
-    } catch (error) {
-      this.logger.log(
-        `BrowserManager cleanup failed: ${getErrorMessage(error)}`,
-        '/tmp/browser_manager.log',
-        { logLevel: 'ERROR' }
-      );
-    }
-  }
-}

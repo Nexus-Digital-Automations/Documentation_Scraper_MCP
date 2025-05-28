@@ -8,6 +8,9 @@ export declare class UrlDiscoveryEngine {
     private logger;
     private browserManager;
     private contentExtractor;
+    private interactionHandler?;
+    private structuredDataExtractor?;
+    private changeDetectionMonitor?;
     private discoveredUrls;
     private visitedUrls;
     private failedUrls;
@@ -47,17 +50,30 @@ export declare class UrlDiscoveryEngine {
      */
     private autoScrollPage;
     /**
-     * Click toggle buttons to expand collapsed content sections
-     * Preserves original module toggle clicking functionality with comprehensive selectors
+     * Click toggle buttons to expand collapsed content sections with comprehensive enhancements
+     * Features: smart waiting, state tracking, custom selectors, text-based targeting, and expansion verification
      *
      * @param page - Puppeteer page instance to process
+     * @param sessionTextBasedClickTargets - Optional session-specific text-based click patterns
+     * @returns Promise<boolean> - True if any toggles were successfully clicked and expanded
      */
     private clickToggleButtons;
     /**
+     * Helper method for clicking and verifying toggle expansion
+     * Implements comprehensive state verification using page.waitForFunction
+     *
+     * @param page - Puppeteer page instance
+     * @param element - Element to click
+     * @param identifier - Identifier string for logging
+     * @returns Promise<boolean> - True if click and verification succeeded
+     */
+    private clickAndVerify;
+    /**
      * Determine if URL should be included in crawling based on filtering rules
-     * Implements comprehensive URL filtering logic from original module
+     * Implements comprehensive URL filtering with both inclusion and exclusion logic
      *
      * @param url - URL to evaluate for inclusion
+     * @param keywords - Optional keywords for inclusion filtering (URLs must contain at least one keyword)
      * @param excludePatterns - Optional custom exclude patterns
      * @returns boolean - True if URL should be included, false otherwise
      */
